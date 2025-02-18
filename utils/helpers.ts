@@ -1,3 +1,5 @@
+import { SuiClient } from "@mysten/sui/client";
+import { WalletContextState } from "@suiet/wallet-kit";
 import BN from "bn.js";
 
 // We allow at most 8 chars (and at least 2) for symbol
@@ -12,12 +14,12 @@ const MAX_DESCRIPTION_LENGTH = 320;
 const MAX_ICON_LENGTH = 320;
 
 export interface PoolData extends Digest {
-  pool: string
+  pool: string;
 }
 
 export interface Digest {
-  digest: string
-  explorer: string
+  digest: string;
+  explorer: string;
 }
 
 export interface DropParams {
@@ -76,7 +78,86 @@ export interface TokenConfig {
   name: string; // 0-32 chars
   description: string; // 0-320 chars
   iconUrl: string; // 0-320 chars
-  // totalSupply: bigint; // Maximum token supply
+}
+
+async function getTreasuryInfoForToken(
+  wallet: WalletContextState,
+  digest: string
+): Promise<PublishData> {
+  try {
+    if (
+      !wallet.connected ||
+      !wallet.account?.address ||
+      !wallet.chain?.rpcUrl
+    ) {
+      throw new Error("Wallet not connected!");
+    }
+
+    const client = new SuiClient({
+      url: wallet.chain.rpcUrl,
+    });
+
+    const treasuryObjects = await client.getTransactionBlock({
+      digest,
+      options: {
+        showEffects: true,
+        showInput: true,
+        showEvents: true,
+        showObjectChanges: true,
+      },
+    });
+
+    for (const obj of treasuryObjects.effects?.created || []) {
+      const objectDetails = await client.getObject({
+        id: obj.reference.objectId,
+        options: {
+          showContent: true,
+          showType: true,
+        },
+      });
+      console.log(objectDetails);
+      if (
+        objectDetails?.data &&
+        objectDetails.data.type?.includes("::coin::TreasuryCap<")
+      ) {
+        console.log(objectDetails);
+        return {
+          digest,
+          treasuryAddress: objectDetails.data.objectId,
+          treasuryObjectType: objectDetails.data.type,
+          coinType: objectDetails.data.type.match(/<([^>]+)>/)?.[1]!,
+          coinAddress: "",
+          explorer: `https://suiscan.xyz/${wallet.chain.name.toLowerCase()}/tx/${digest}`,
+        };
+      }
+    }
+
+    throw new Error("No TreasuryCap found in the transaction block");
+  } catch (error) {
+    console.error("Error retrieving treasury information:", error);
+    throw error;
+  }
+}
+
+function getTreasury(data: PublishData): TreasuryCap {
+  try {
+    if (!data || !data.treasuryObjectType || !data.treasuryAddress) {
+      throw new Error("Missing required fields in publish data.");
+    }
+
+    const [address, module, name] = data.treasuryObjectType
+      .slice(
+        data.treasuryObjectType.indexOf("<") + 1,
+        data.treasuryObjectType.length - 1
+      )
+      .split("::");
+    return {
+      address: data.treasuryAddress,
+      innerType: { address, module, name },
+    };
+  } catch (error: any) {
+    throw new Error("Failed to get treasury details!");
+  }
 }
 
 /**
